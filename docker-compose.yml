@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: repo-analyst:latest
+    container_name: repo-analyst
+    environment:
+      # OpenAI API key from .env file
+      - open_ai_api_key=${open_ai_api_key}
+      # Python settings
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      # Mount the httpx repository (read-only)
+      - ./httpx:/app/httpx:ro
+      # Mount data directory for index persistence
+      - ./data:/app/data
+      # Mount config for easy modifications
+      - ./config.yaml:/app/config.yaml:ro
+      # Optional: Mount .env for runtime config
+      - ./.env:/app/.env:ro
+    working_dir: /app
+    stdin_open: true
+    tty: true
+    # Override default command for interactive use
+    command: /bin/bash -c "
+      if [ ! -f /app/data/faiss.index ]; then
+        echo 'Building index for first run...';
+        python app.py index;
+      fi;
+      echo 'Repo Analyst ready. Run queries with:';
+      echo '  docker-compose run app python app.py query \"your question\"';
+      echo '  docker-compose run app python app.py interactive';
+      tail -f /dev/null
+      "
+
+  # Optional: Separate service for one-off commands
+  cli:
+    image: repo-analyst:latest
+    environment:
+      - open_ai_api_key=${open_ai_api_key}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./httpx:/app/httpx:ro
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+      - ./.env:/app/.env:ro
+    working_dir: /app
+    profiles: ["cli"]
+    stdin_open: true
+    tty: true
