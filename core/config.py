@@ -14,11 +14,12 @@ class Config:
     Loads configuration from config.yaml and validates required settings.
     """
     
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(self, config_path: str = "config.yaml", validate_api_key: bool = False):
         """Initialize configuration from YAML file.
         
         Args:
             config_path: Path to the configuration file
+            validate_api_key: Whether to validate API key on initialization
             
         Raises:
             FileNotFoundError: If config file doesn't exist
@@ -26,10 +27,13 @@ class Config:
         """
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
-        self._validate()
+        self._validate(validate_api_key=validate_api_key)
     
-    def _validate(self):
+    def _validate(self, validate_api_key: bool = False):
         """Check required settings and paths.
+        
+        Args:
+            validate_api_key: Whether to validate API key
         
         Raises:
             FileNotFoundError: If repository path doesn't exist
@@ -39,10 +43,11 @@ class Config:
         if not repo_path.exists():
             raise FileNotFoundError(f"Repository path not found: {repo_path}")
         
-        # Check API key
-        api_key_env = self.config['llm']['api_key_env']
-        if not os.getenv(api_key_env):
-            raise EnvironmentError(f"Missing environment variable: {api_key_env}")
+        # Check API key (optional, only needed for RAG queries)
+        if validate_api_key:
+            api_key_env = self.config['llm']['api_key_env']
+            if not os.getenv(api_key_env):
+                raise EnvironmentError(f"Missing environment variable: {api_key_env}")
     
     def get(self, *keys, default=None):
         """Get nested config value.
