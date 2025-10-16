@@ -1,0 +1,42 @@
+# Python virtual environment
+venv/
+
+# The code we are analyzing (do not commit this to your repo)
+httpx/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Project-specific files to ignore
+instructions.md
+
+# planning file:
+plan.md
+
+# ignore everything in the appd directory
+appd/
+
+# Data directory (FAISS index and metadata)
+data/
+
+# Logs
+logs/
+*.log
+
+# Environment variables
+.env
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

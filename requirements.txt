@@ -1,0 +1,18 @@
+# Core RAG
+sentence-transformers>=2.2.2
+faiss-cpu>=1.7.4
+numpy>=1.24.0
+
+# LangGraph for agent orchestration
+langgraph>=0.0.20
+langchain-core>=0.1.0
+langchain-openai>=0.0.5
+
+# Utilities
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# CLI
+click>=8.1.0
+rich>=13.0.0
+
