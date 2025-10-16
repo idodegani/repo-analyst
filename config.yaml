@@ -24,7 +24,19 @@ vector_store:
 
 # Retrieval Configuration
 retrieval:
-  top_k: 5               # Number of chunks to retrieve
+  top_k: 5               # Number of chunks to retrieve (adaptive)
+  min_score: 0.3         # Minimum similarity score threshold
+
+# Result Validation Configuration
+validation:
+  require_citations: true      # Ensure answer contains citations
+  min_answer_length: 50        # Minimum answer length in characters
+  check_grounding: true        # Verify answer is grounded in context
+
+# Conversation Configuration
+conversation:
+  enable_history: true         # Enable conversation history
+  max_history_turns: 5         # Maximum turns to keep in history
 
 # LLM Configuration
 llm:
@@ -32,5 +44,5 @@ llm:
   model: "gpt-4o-mini"
   temperature: 0.1
   max_tokens: 1500
-  api_key_env: "OPENAI_API_KEY"
+  api_key_env: "open_ai_api_key"
 

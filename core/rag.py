@@ -2,12 +2,15 @@
 
 This module implements the retrieval-augmented generation pipeline
 using LangGraph for state management and flow control.
+Supports conversation history, adaptive retrieval, and result validation.
 """
 
 import os
 import json
+import re
 import faiss
 import numpy as np
+from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
@@ -16,33 +19,52 @@ from typing import List, Dict, TypedDict, Optional
 from .config import Config
 
 
+class ConversationTurn(TypedDict):
+    """A single turn in the conversation."""
+    query: str
+    answer: str
+
+
 class RAGState(TypedDict):
     """State for the RAG agent flow.
     
     Attributes:
-        query: User's question about the codebase
+        query: User's current question about the codebase
+        conversation_history: List of previous Q&A turns
         query_embedding: Numpy array of the query embedding for FAISS search
         retrieved_chunks: List of relevant code chunks from vector store
         context: Formatted context string to send to LLM
         answer: Final generated answer with citations
+        validation_passed: Whether answer passed validation checks
+        validation_message: Validation feedback message
         error: Any error message encountered during execution
     """
     query: str
+    conversation_history: List[ConversationTurn]
     query_embedding: Optional[np.ndarray]
     retrieved_chunks: List[Dict]
     context: str
     answer: str
+    validation_passed: bool
+    validation_message: str
     error: Optional[str]
 
 
 class RAGPipeline:
     """RAG pipeline orchestrated with LangGraph.
     
-    This class implements a retrieval-augmented generation pipeline:
+    This class implements a retrieval-augmented generation pipeline with:
+    - Conversation history support
+    - Adaptive retrieval (configurable top_k)
+    - Result validation
+    - Citation grounding
+    
+    Flow:
     1. Embed query
-    2. Retrieve relevant chunks from FAISS
-    3. Build context with citations
+    2. Retrieve relevant chunks (adaptive based on config)
+    3. Build context with conversation history
     4. Generate answer using LLM
+    5. Validate answer quality
     """
     
     def __init__(self, config: Config):
@@ -56,18 +78,27 @@ class RAGPipeline:
             EnvironmentError: If API key is not set
         """
         self.config = config
+        
+        # Load environment variables from .env file
+        load_dotenv()
+        
+        # Initialize embedding model
         self.model = SentenceTransformer(
             config.get('vector_store', 'embedding_model')
         )
+        
+        # Load FAISS index and metadata
         self.index = None
         self.chunks: List[Dict] = []
         self._load_index_and_metadata()
         
         # Initialize LangChain LLM
-        api_key = os.getenv(config.get('llm', 'api_key_env'))
+        api_key_env = config.get('llm', 'api_key_env')
+        api_key = os.getenv(api_key_env)
         if not api_key:
             raise EnvironmentError(
-                f"Missing environment variable: {config.get('llm', 'api_key_env')}"
+                f"Missing environment variable: {api_key_env}. "
+                f"Please set it in your .env file."
             )
         
         self.llm = ChatOpenAI(
@@ -79,6 +110,9 @@ class RAGPipeline:
         
         # Build LangGraph
         self.graph = self._build_graph()
+        
+        # Conversation history (maintained across queries)
+        self.conversation_history: List[ConversationTurn] = []
     
     def _load_index_and_metadata(self) -> None:
         """Load FAISS index and chunk metadata.
@@ -128,7 +162,9 @@ class RAGPipeline:
         return state
     
     def _retrieve_chunks(self, state: RAGState) -> RAGState:
-        """Node: Retrieve relevant chunks from FAISS.
+        """Node: Retrieve relevant chunks from FAISS (adaptive).
+        
+        Uses configurable top_k and filters by minimum score threshold.
         
         Args:
             state: Current RAG state with query_embedding
@@ -144,29 +180,39 @@ class RAGPipeline:
             query_embedding = state['query_embedding']
             faiss.normalize_L2(query_embedding)
             
+            # Adaptive retrieval: get top_k from config
+            top_k = self.config.get('retrieval', 'top_k', default=5)
+            min_score = self.config.get('retrieval', 'min_score', default=0.3)
+            
             # Search
-            top_k = self.config.get('retrieval', 'top_k')
             scores, indices = self.index.search(query_embedding, top_k)
             
-            # Get chunks
+            # Get chunks and filter by minimum score
             results = []
             for idx, score in zip(indices[0], scores[0]):
-                if idx < len(self.chunks):
+                if idx < len(self.chunks) and score >= min_score:
                     chunk = self.chunks[idx].copy()
                     chunk['score'] = float(score)
                     results.append(chunk)
             
             state['retrieved_chunks'] = results
+            
+            # If no results meet threshold, return error
+            if not results:
+                state['error'] = (
+                    f"No relevant information found in the repository "
+                    f"(all scores below {min_score} threshold)."
+                )
         except Exception as e:
             state['error'] = f"Error retrieving chunks: {e}"
         
         return state
     
     def _build_context(self, state: RAGState) -> RAGState:
-        """Node: Format retrieved chunks into context.
+        """Node: Format retrieved chunks into context with conversation history.
         
         Args:
-            state: Current RAG state with retrieved_chunks
+            state: Current RAG state with retrieved_chunks and conversation_history
             
         Returns:
             Updated state with context prompt or error
@@ -188,28 +234,44 @@ class RAGPipeline:
                 start_line = chunk.get('start_line', '?')
                 end_line = chunk.get('end_line', '?')
                 citation = f"[{file_path}:{start_line}-{end_line}]"
+                score = chunk.get('score', 0.0)
                 
                 context_parts.append(
-                    f"[Chunk {i+1}] {citation}\n{chunk['text']}"
+                    f"[Chunk {i+1}] {citation} (relevance: {score:.3f})\n{chunk['text']}"
                 )
             
             context = "\n\n".join(context_parts)
+            
+            # Build conversation history section
+            history_section = ""
+            conversation_history = state.get('conversation_history', [])
+            
+            if conversation_history and self.config.get('conversation', 'enable_history', default=True):
+                history_section = "\n\n--- CONVERSATION HISTORY ---\n"
+                for i, turn in enumerate(conversation_history, 1):
+                    history_section += f"\n[Previous Query {i}]: {turn['query']}\n"
+                    history_section += f"[Previous Answer {i}]: {turn['answer']}\n"
+                history_section += "\n--- END OF HISTORY ---\n"
             
             # Build prompt
             prompt = f"""You are a code analysis assistant for the httpx library.
 Answer the question using ONLY the provided code chunks.
 
+{history_section}
+
 Code Context:
 {context}
 
+--- CURRENT USER QUERY ---
 Question: {state['query']}
 
 Instructions:
-- Answer based ONLY on the code above
+- Answer based ONLY on the code chunks provided above
 - Include specific file:line citations in your answer (e.g., httpx/_client.py:45-67)
 - Be concise and accurate
 - If the context doesn't contain enough information, say so clearly
-- Format: Provide answer, then list citations
+- DO NOT make up information not present in the chunks
+- Reference previous conversation if relevant to the current query
 
 Answer:"""
             
@@ -241,6 +303,80 @@ Answer:"""
             state['answer'] = response.content
         except Exception as e:
             state['answer'] = f"Error generating answer: {e}"
+            state['error'] = str(e)
+        
+        return state
+    
+    def _validate_answer(self, state: RAGState) -> RAGState:
+        """Node: Validate answer quality.
+        
+        Checks:
+        - Answer contains citations (if configured)
+        - Answer meets minimum length (if configured)
+        - Answer is grounded in context (if configured)
+        
+        Args:
+            state: Current RAG state with answer
+            
+        Returns:
+            Updated state with validation results
+        """
+        if state.get('error'):
+            state['validation_passed'] = False
+            state['validation_message'] = f"Validation skipped due to error: {state['error']}"
+            return state
+        
+        validation_issues = []
+        answer = state['answer']
+        
+        # Check if validation is enabled
+        if not self.config.get('validation', 'require_citations', default=True):
+            state['validation_passed'] = True
+            state['validation_message'] = "Validation disabled in config"
+            return state
+        
+        # Check 1: Citations present
+        if self.config.get('validation', 'require_citations', default=True):
+            # Look for file:line patterns
+            citation_pattern = r'\w+[/\\][\w/\\._-]+:\d+(?:-\d+)?'
+            citations = re.findall(citation_pattern, answer)
+            
+            if not citations:
+                validation_issues.append(
+                    "Answer lacks specific file:line citations"
+                )
+        
+        # Check 2: Minimum length
+        min_length = self.config.get('validation', 'min_answer_length', default=50)
+        if len(answer) < min_length:
+            validation_issues.append(
+                f"Answer too short ({len(answer)} < {min_length} characters)"
+            )
+        
+        # Check 3: Grounding check (basic)
+        if self.config.get('validation', 'check_grounding', default=True):
+            # Check if answer contains hedge words when uncertain
+            uncertainty_phrases = [
+                "I don't have enough information",
+                "The provided context doesn't",
+                "I cannot find",
+                "not enough information"
+            ]
+            has_hedge = any(phrase.lower() in answer.lower() for phrase in uncertainty_phrases)
+            
+            # If answer is very short and has no citations, but also no hedge, flag it
+            if len(answer) < 100 and not re.search(citation_pattern, answer) and not has_hedge:
+                validation_issues.append(
+                    "Answer may not be properly grounded (no citations and no uncertainty expressed)"
+                )
+        
+        # Set validation results
+        if validation_issues:
+            state['validation_passed'] = False
+            state['validation_message'] = "Validation issues: " + "; ".join(validation_issues)
+        else:
+            state['validation_passed'] = True
+            state['validation_message'] = "Answer passed all validation checks"
         
         return state
     
@@ -257,18 +393,20 @@ Answer:"""
         workflow.add_node("retrieve_chunks", self._retrieve_chunks)
         workflow.add_node("build_context", self._build_context)
         workflow.add_node("generate_answer", self._generate_answer)
+        workflow.add_node("validate_answer", self._validate_answer)
         
-        # Define edges (linear flow)
+        # Define edges (linear flow with validation at end)
         workflow.set_entry_point("embed_query")
         workflow.add_edge("embed_query", "retrieve_chunks")
         workflow.add_edge("retrieve_chunks", "build_context")
         workflow.add_edge("build_context", "generate_answer")
-        workflow.add_edge("generate_answer", END)
+        workflow.add_edge("generate_answer", "validate_answer")
+        workflow.add_edge("validate_answer", END)
         
         return workflow.compile()
     
     def query(self, user_query: str) -> str:
-        """Execute the RAG pipeline.
+        """Execute the RAG pipeline with conversation history support.
         
         Args:
             user_query: User's question about the codebase
@@ -276,16 +414,51 @@ Answer:"""
         Returns:
             Generated answer with citations
         """
+        # Prepare initial state with conversation history
         initial_state: RAGState = {
             "query": user_query,
+            "conversation_history": self.conversation_history.copy(),
             "query_embedding": None,
             "retrieved_chunks": [],
             "context": "",
             "answer": "",
+            "validation_passed": False,
+            "validation_message": "",
             "error": None
         }
         
         # Run the graph
         final_state = self.graph.invoke(initial_state)
         
-        return final_state['answer']
+        # Update conversation history if answer is valid
+        if final_state['validation_passed'] and not final_state.get('error'):
+            max_history = self.config.get('conversation', 'max_history_turns', default=5)
+            
+            # Add to history
+            self.conversation_history.append({
+                'query': user_query,
+                'answer': final_state['answer']
+            })
+            
+            # Keep only last N turns
+            if len(self.conversation_history) > max_history:
+                self.conversation_history = self.conversation_history[-max_history:]
+        
+        # Return answer with validation info if it failed
+        answer = final_state['answer']
+        if not final_state['validation_passed']:
+            answer += f"\n\n[Validation Note: {final_state['validation_message']}]"
+        
+        return answer
+    
+    def clear_history(self) -> None:
+        """Clear conversation history."""
+        self.conversation_history = []
+    
+    def get_history(self) -> List[ConversationTurn]:
+        """Get current conversation history.
+        
+        Returns:
+            List of conversation turns
+        """
+        return self.conversation_history.copy()
