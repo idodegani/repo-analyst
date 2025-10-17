@@ -104,7 +104,14 @@ def query(query_text: str, verbose: bool):
         console.print("\n" + "=" * 60)
         console.print("[bold green]Answer:[/bold green]\n")
         console.print(Markdown(answer))
-        console.print("=" * 60 + "\n")
+        console.print("=" * 60)
+        
+        # Display judge score if available
+        judge_score = rag.get_last_judge_score()
+        if judge_score is not None:
+            console.print(f"[blue]>> LLM Judge Score: {judge_score}/6[/blue]")
+        
+        console.print()
         
         if verbose:
             console.print(f"[dim]Conversation history: {len(rag.get_history())} turns[/dim]\n")
@@ -236,10 +243,15 @@ def interactive(no_history: bool):
             console.print("[bold green]Answer:[/bold green]")
             console.print(Markdown(answer))
             
+            # Display judge score if available
+            judge_score = rag.get_last_judge_score()
+            if judge_score is not None:
+                console.print(f"\n[blue]>> LLM Judge Score: {judge_score}/6[/blue]")
+            
             # Show history indicator
             history_len = len(rag.get_history())
             if history_len > 0:
-                console.print(f"\n[dim]>> Conversation history: {history_len} turns[/dim]")
+                console.print(f"[dim]>> Conversation history: {history_len} turns[/dim]")
             
             console.print()
             

@@ -127,6 +127,9 @@ class RAGPipeline:
         
         # Conversation history (maintained across queries)
         self.conversation_history: List[ConversationTurn] = []
+        
+        # Store last judge score for CLI display
+        self.last_judge_score: Optional[int] = None
     
     def _load_index_and_metadata(self) -> None:
         """Load FAISS index and chunk metadata.
@@ -586,6 +589,9 @@ Answer:"""
         # Run the graph
         final_state = self.graph.invoke(initial_state)
         
+        # Store judge score for CLI display
+        self.last_judge_score = final_state.get('judge_score')
+        
         # Update conversation history if answer is valid
         if final_state['validation_passed'] and not final_state.get('error'):
             max_history = self.config.get('conversation', 'max_history_turns', default=5)
@@ -621,3 +627,11 @@ Answer:"""
             List of conversation turns
         """
         return self.conversation_history.copy()
+    
+    def get_last_judge_score(self) -> Optional[int]:
+        """Get the judge score from the last query.
+        
+        Returns:
+            Judge score (1-6) or None if judge is disabled
+        """
+        return self.last_judge_score
