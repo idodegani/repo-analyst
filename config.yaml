@@ -46,3 +46,13 @@ llm:
   max_tokens: 1500
   api_key_env: "open_ai_api_key"
 
+# Judge Configuration
+judge:
+  enabled: true
+  model: "gpt-4o-mini"       # Can use same or different model for independence
+  temperature: 0.0           # Lower temp for consistent judging
+  max_retries: 1             # Maximum retry attempts for low scores
+  confidence_thresholds:
+    high: 5                  # Scores >= 5 are good
+    medium: 3                # Scores 3-4 get warning
+

@@ -17,6 +17,7 @@ from langgraph.graph import StateGraph, END
 from typing import List, Dict, TypedDict, Optional
 
 from .config import Config
+from .judge import AnswerJudge
 
 
 class ConversationTurn(TypedDict):
@@ -37,6 +38,10 @@ class RAGState(TypedDict):
         answer: Final generated answer with citations
         validation_passed: Whether answer passed validation checks
         validation_message: Validation feedback message
+        judge_score: Score from LLM judge (1-6)
+        judge_feedback: Feedback from judge for retry attempts
+        retry_count: Number of retry attempts made
+        is_retry: Whether this is a retry attempt
         error: Any error message encountered during execution
     """
     query: str
@@ -47,6 +52,10 @@ class RAGState(TypedDict):
     answer: str
     validation_passed: bool
     validation_message: str
+    judge_score: Optional[int]
+    judge_feedback: Optional[str]
+    retry_count: int
+    is_retry: bool
     error: Optional[str]
 
 
@@ -107,6 +116,11 @@ class RAGPipeline:
             max_tokens=config.get('llm', 'max_tokens'),
             api_key=api_key
         )
+        
+        # Initialize judge if enabled
+        self.judge = None
+        if config.get('judge', 'enabled', default=False):
+            self.judge = AnswerJudge(config)
         
         # Build LangGraph
         self.graph = self._build_graph()
@@ -253,8 +267,19 @@ class RAGPipeline:
                     history_section += f"[Previous Answer {i}]: {turn['answer']}\n"
                 history_section += "\n--- END OF HISTORY ---\n"
             
+            # Check if this is a retry with feedback
+            feedback_section = ""
+            if state.get('is_retry') and state.get('judge_feedback'):
+                feedback_section = (
+                    f"Note: You tried to answer this before, and gave this answer '{state.get('answer', 'N/A')}' "
+                    f"but it was not good enough because of {state['judge_feedback']}. "
+                    f"Try again and take into consideration this feedback. "
+                    f"Do not answer to this feedback, or comment on it. "
+                    f"It is only here to make you produce a better answer. Do not reply to it.\n\n"
+                )
+            
             # Build prompt
-            prompt = f"""You are a code analysis assistant for the httpx library.
+            prompt = f"""{feedback_section}You are a code analysis assistant for the httpx library.
 Answer the question using ONLY the provided code chunks.
 
 {history_section}
@@ -304,6 +329,43 @@ Answer:"""
         except Exception as e:
             state['answer'] = f"Error generating answer: {e}"
             state['error'] = str(e)
+        
+        return state
+    
+    def _judge_answer(self, state: RAGState) -> RAGState:
+        """Node: Judge answer quality using LLM judge.
+        
+        Evaluates the answer based on grounding in retrieved chunks.
+        Sets judge_score and judge_feedback for retry logic.
+        
+        Args:
+            state: Current RAG state with answer and chunks
+            
+        Returns:
+            Updated state with judge evaluation
+        """
+        # Skip if error or judge not enabled
+        if state.get('error') or not self.judge:
+            state['judge_score'] = 5  # Default to pass if judge disabled
+            state['judge_feedback'] = None
+            return state
+        
+        try:
+            # Evaluate answer
+            score, feedback = self.judge.evaluate_answer(
+                query=state['query'],
+                retrieved_chunks=state['retrieved_chunks'],
+                answer=state['answer']
+            )
+            
+            state['judge_score'] = score
+            state['judge_feedback'] = feedback
+            
+        except Exception as e:
+            # On error, default to neutral score
+            print(f"Judge error: {e}")
+            state['judge_score'] = 4
+            state['judge_feedback'] = None
         
         return state
     
@@ -380,6 +442,72 @@ Answer:"""
         
         return state
     
+    def _should_retry(self, state: RAGState) -> str:
+        """Conditional edge function to determine retry logic.
+        
+        Args:
+            state: Current RAG state with judge score
+            
+        Returns:
+            Next node name: "retry" or "finalize"
+        """
+        # Check if judge is enabled and we should retry
+        if not self.judge:
+            return "finalize"
+        
+        score = state.get('judge_score', 5)
+        retry_count = state.get('retry_count', 0)
+        max_retries = self.config.get('judge', 'max_retries', default=1)
+        
+        # Retry if score is 1-2 and we haven't exceeded max retries
+        if score <= 2 and retry_count < max_retries:
+            return "retry"
+        else:
+            return "finalize"
+    
+    def _prepare_retry(self, state: RAGState) -> RAGState:
+        """Node: Prepare state for retry attempt.
+        
+        Args:
+            state: Current RAG state
+            
+        Returns:
+            Updated state ready for retry
+        """
+        state['retry_count'] = state.get('retry_count', 0) + 1
+        state['is_retry'] = True
+        # Keep the feedback and previous answer for context
+        return state
+    
+    def _finalize_answer(self, state: RAGState) -> RAGState:
+        """Node: Finalize answer with appropriate messages.
+        
+        Adds confidence warnings or cannot-help messages based on score.
+        
+        Args:
+            state: Current RAG state
+            
+        Returns:
+            Updated state with finalized answer
+        """
+        if not self.judge:
+            # No judge, use original validation
+            return state
+        
+        score = state.get('judge_score', 5)
+        
+        # Check if this is a failed retry
+        if score <= 2 and state.get('retry_count', 0) >= self.config.get('judge', 'max_retries', default=1):
+            # Replace with cannot-help message
+            state['answer'] = self.judge.get_cannot_help_message()
+        else:
+            # Add confidence warning if needed
+            confidence_msg = self.judge.get_confidence_message(score)
+            if confidence_msg:
+                state['answer'] += confidence_msg
+        
+        return state
+    
     def _build_graph(self) -> StateGraph:
         """Build the LangGraph workflow.
         
@@ -393,14 +521,38 @@ Answer:"""
         workflow.add_node("retrieve_chunks", self._retrieve_chunks)
         workflow.add_node("build_context", self._build_context)
         workflow.add_node("generate_answer", self._generate_answer)
+        
+        # Add judge and related nodes if enabled
+        if self.judge:
+            workflow.add_node("judge_answer", self._judge_answer)
+            workflow.add_node("prepare_retry", self._prepare_retry)
+            workflow.add_node("finalize_answer", self._finalize_answer)
+        
         workflow.add_node("validate_answer", self._validate_answer)
         
-        # Define edges (linear flow with validation at end)
+        # Define edges
         workflow.set_entry_point("embed_query")
         workflow.add_edge("embed_query", "retrieve_chunks")
         workflow.add_edge("retrieve_chunks", "build_context")
         workflow.add_edge("build_context", "generate_answer")
-        workflow.add_edge("generate_answer", "validate_answer")
+        
+        if self.judge:
+            # With judge: generate → judge → conditional routing
+            workflow.add_edge("generate_answer", "judge_answer")
+            workflow.add_conditional_edges(
+                "judge_answer",
+                self._should_retry,
+                {
+                    "retry": "prepare_retry",
+                    "finalize": "finalize_answer"
+                }
+            )
+            workflow.add_edge("prepare_retry", "build_context")  # Retry loop
+            workflow.add_edge("finalize_answer", "validate_answer")
+        else:
+            # Without judge: generate → validate
+            workflow.add_edge("generate_answer", "validate_answer")
+        
         workflow.add_edge("validate_answer", END)
         
         return workflow.compile()
@@ -424,6 +576,10 @@ Answer:"""
             "answer": "",
             "validation_passed": False,
             "validation_message": "",
+            "judge_score": None,
+            "judge_feedback": None,
+            "retry_count": 0,
+            "is_retry": False,
             "error": None
         }
         
@@ -446,7 +602,10 @@ Answer:"""
         
         # Return answer with validation info if it failed
         answer = final_state['answer']
-        if not final_state['validation_passed']:
+        
+        # Note: Judge messages are already added in _finalize_answer node
+        # Only add validation message if judge is disabled
+        if not self.judge and not final_state['validation_passed']:
             answer += f"\n\n[Validation Note: {final_state['validation_message']}]"
         
         return answer
