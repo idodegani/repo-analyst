@@ -5,16 +5,32 @@ Answer natural language questions with grounded answers and file:line citations.
 """
 
 import sys
+import logging
 import click
 from rich.console import Console
 from rich.panel import Panel
 from rich.markdown import Markdown
 from rich.table import Table
+from rich.logging import RichHandler
 
 from core.config import Config
 from core.indexer import DocumentIndexer
 from core.rag import RAGPipeline
 
+
+# Configure logging with Rich handler for beautiful output
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",
+    datefmt="[%X]",
+    handlers=[RichHandler(rich_tracebacks=True, show_path=False)]
+)
+
+# Set library loggers to WARNING to reduce noise
+logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
+logging.getLogger("transformers").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
 
 console = Console()
 

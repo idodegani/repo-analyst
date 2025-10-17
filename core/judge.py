@@ -7,11 +7,14 @@ provides feedback for improvement.
 
 import os
 import json
+import logging
 from typing import Dict, List, Optional, Tuple
 from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 
 from .config import Config
+
+logger = logging.getLogger(__name__)
 
 
 class AnswerJudge:
@@ -108,7 +111,7 @@ class AnswerJudge:
             
         except Exception as e:
             # On error, return neutral score to avoid blocking
-            print(f"Judge evaluation error: {e}")
+            logger.error(f"Judge evaluation error: {e}")
             return 4, None
     
     def _format_chunks_for_judge(self, chunks: List[Dict]) -> str:

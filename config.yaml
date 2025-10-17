@@ -21,6 +21,7 @@ vector_store:
   index_path: "./data/faiss.index"
   metadata_path: "./data/chunks.jsonl"
   embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  batch_size: 32            # Batch size for embedding generation
 
 # Retrieval Configuration
 retrieval:

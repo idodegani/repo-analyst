@@ -4,6 +4,7 @@ This module handles embedding generation and FAISS index creation.
 """
 
 import json
+import logging
 import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
@@ -13,6 +14,8 @@ from typing import List, Dict
 from .config import Config
 from .loader import RepositoryLoader
 from .chunker import CodeChunker
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentIndexer:
@@ -49,7 +52,7 @@ class DocumentIndexer:
         4. Builds FAISS index
         5. Saves metadata to JSONL
         """
-        print("Starting indexing...")
+        logger.info("Starting indexing...")
         
         # 1. Load files
         loader = RepositoryLoader(self.config)
@@ -63,10 +66,10 @@ class DocumentIndexer:
                 file_chunks = chunker.chunk_file(content, str(file_path))
                 self.chunks.extend(file_chunks)
         
-        print(f"Created {len(self.chunks)} chunks")
+        logger.info(f"Created {len(self.chunks)} chunks")
         
         if not self.chunks:
-            print("Warning: No chunks created. Check your repository path and file extensions.")
+            logger.warning("No chunks created. Check your repository path and file extensions.")
             return
         
         # 3. Generate embeddings
@@ -78,7 +81,7 @@ class DocumentIndexer:
         # 5. Save metadata
         self._save_metadata()
         
-        print("Indexing complete!")
+        logger.info("Indexing complete!")
     
     def _generate_embeddings(self) -> None:
         """Generate embeddings in batches.
@@ -87,9 +90,9 @@ class DocumentIndexer:
         progress during generation.
         """
         texts = [chunk['text'] for chunk in self.chunks]
-        print(f"Generating embeddings for {len(texts)} chunks...")
+        logger.info(f"Generating embeddings for {len(texts)} chunks...")
         
-        batch_size = 32
+        batch_size = self.config.get('vector_store', 'batch_size', default=32)
         all_embeddings = []
         
         for i in range(0, len(texts), batch_size):
@@ -98,7 +101,7 @@ class DocumentIndexer:
             all_embeddings.extend(batch_embeddings)
         
         self.embeddings = np.array(all_embeddings).astype('float32')
-        print(f"Generated embeddings: {self.embeddings.shape}")
+        logger.info(f"Generated embeddings: {self.embeddings.shape}")
     
     def _build_faiss_index(self) -> None:
         """Build FAISS index with cosine similarity.
@@ -118,7 +121,7 @@ class DocumentIndexer:
         index_path = self.config.get('vector_store', 'index_path')
         Path(index_path).parent.mkdir(parents=True, exist_ok=True)
         faiss.write_index(index, index_path)
-        print(f"Saved FAISS index: {index.ntotal} vectors")
+        logger.info(f"Saved FAISS index: {index.ntotal} vectors")
     
     def _save_metadata(self) -> None:
         """Save chunk metadata to JSONL.
@@ -136,4 +139,4 @@ class DocumentIndexer:
         with open(metadata_path, 'w', encoding='utf-8') as f:
             for chunk in self.chunks:
                 f.write(json.dumps(chunk, ensure_ascii=False) + '\n')
-        print(f"Saved metadata: {len(self.chunks)} chunks")
+        logger.info(f"Saved metadata: {len(self.chunks)} chunks")

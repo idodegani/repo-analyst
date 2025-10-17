@@ -3,9 +3,12 @@
 This module handles file discovery and loading from the repository.
 """
 
+import logging
 import os
 from pathlib import Path
 from typing import List
+
+logger = logging.getLogger(__name__)
 
 
 class RepositoryLoader:
@@ -41,7 +44,7 @@ class RepositoryLoader:
                 if any(filename.endswith(ext) for ext in self.extensions):
                     files.append(Path(root) / filename)
         
-        print(f"Found {len(files)} files")
+        logger.info(f"Found {len(files)} files")
         return files
     
     def load_file(self, file_path: Path) -> str:
@@ -62,9 +65,9 @@ class RepositoryLoader:
                 with open(file_path, 'r', encoding='latin-1') as f:
                     return f.read()
             except Exception as e:
-                print(f"Error loading {file_path}: {e}")
+                logger.error(f"Error loading {file_path}: {e}")
                 return ""
         except Exception as e:
-            print(f"Error loading {file_path}: {e}")
+            logger.error(f"Error loading {file_path}: {e}")
             return ""
 

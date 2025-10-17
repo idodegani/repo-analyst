@@ -7,6 +7,7 @@ Supports conversation history, adaptive retrieval, and result validation.
 
 import os
 import json
+import logging
 import re
 import faiss
 import numpy as np
@@ -18,6 +19,8 @@ from typing import List, Dict, TypedDict, Optional
 
 from .config import Config
 from .judge import AnswerJudge
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationTurn(TypedDict):
@@ -143,7 +146,7 @@ class RAGPipeline:
         # Load FAISS index
         try:
             self.index = faiss.read_index(index_path)
-            print(f"Loaded FAISS index: {self.index.ntotal} vectors")
+            logger.info(f"Loaded FAISS index: {self.index.ntotal} vectors")
         except Exception as e:
             raise FileNotFoundError(
                 f"Could not load FAISS index from {index_path}. "
@@ -155,7 +158,7 @@ class RAGPipeline:
             with open(metadata_path, 'r', encoding='utf-8') as f:
                 for line in f:
                     self.chunks.append(json.loads(line.strip()))
-            print(f"Loaded {len(self.chunks)} chunks")
+            logger.info(f"Loaded {len(self.chunks)} chunks")
         except Exception as e:
             raise FileNotFoundError(
                 f"Could not load metadata from {metadata_path}. "
@@ -366,7 +369,7 @@ Answer:"""
             
         except Exception as e:
             # On error, default to neutral score
-            print(f"Judge error: {e}")
+            logger.error(f"Judge error: {e}")
             state['judge_score'] = 4
             state['judge_feedback'] = None
         
