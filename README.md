@@ -263,16 +263,6 @@ Python files are parsed using Abstract Syntax Tree (AST) analysis to extract sem
 - **Real-time Updates**: Requires re-indexing to reflect code changes
 - **Semantic Search**: May miss exact symbol matches (use grep for precise searches)
 
-## Contributing
-
-Contributions are welcome! Areas for improvement include:
-
-- Support for additional programming languages
-- Integration with more LLM providers
-- Hybrid search combining semantic and keyword matching
-- Multi-repository support
-- Real-time index updates
-- Web UI interface
 
 ## Acknowledgments
 
