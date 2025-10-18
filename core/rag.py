@@ -352,7 +352,7 @@ Answer:"""
         """
         # Skip if error or judge not enabled
         if state.get('error') or not self.judge:
-            state['judge_score'] = 5  # Default to pass if judge disabled
+            state['judge_score'] = None  # No score if judge disabled or error
             state['judge_feedback'] = None
             return state
         
@@ -368,9 +368,9 @@ Answer:"""
             state['judge_feedback'] = feedback
             
         except Exception as e:
-            # On error, default to neutral score
-            logger.error(f"Judge error: {e}")
-            state['judge_score'] = 4
+            # On error, set score to None to skip display
+            logger.warning(f"Judge evaluation failed, skipping score display: {e}")
+            state['judge_score'] = None
             state['judge_feedback'] = None
         
         return state
@@ -461,7 +461,12 @@ Answer:"""
         if not self.judge:
             return "finalize"
         
-        score = state.get('judge_score', 5)
+        score = state.get('judge_score')
+        
+        # If score is None (judge failed), skip retry
+        if score is None:
+            return "finalize"
+        
         retry_count = state.get('retry_count', 0)
         max_retries = self.config.get('judge', 'max_retries', default=1)
         
@@ -500,7 +505,11 @@ Answer:"""
             # No judge, use original validation
             return state
         
-        score = state.get('judge_score', 5)
+        score = state.get('judge_score')
+        
+        # If score is None (judge failed), skip finalization logic
+        if score is None:
+            return state
         
         # Check if this is a failed retry
         if score <= 2 and state.get('retry_count', 0) >= self.config.get('judge', 'max_retries', default=1):
