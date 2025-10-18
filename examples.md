@@ -155,4 +155,4 @@ The system includes a query router that classifies queries for relevance before 
 **Router Decision:** ✗ Irrelevant
 - **Reason:** Inappropriate request for harmful activity
 - **Response:** "I cannot help with requests related to hacking, unauthorized access, or any potentially harmful activities. I'm here to help you understand and use the httpx library for legitimate HTTP client functionality. Please ask about proper authentication methods or security features in httpx if that's your interest."
-   
+      
