@@ -11,46 +11,41 @@ A RAG-based code analysis tool that answers natural language questions about the
 - 🎯 **Answer Validation**: LLM judge evaluates answer quality and triggers retries if needed
 - 🧠 **Intelligent Chunking**: AST-based parsing for Python code preserves semantic boundaries
 
-## Quick Start (Docker)
-
-```bash
-# One-command setup (Linux/Mac)
-./quickstart.sh
-
-# One-command setup (Windows PowerShell)
-.\quickstart.ps1
-
-# Or manually:
-docker-compose up -d
-docker-compose run app python app.py query "How does httpx handle SSL certificates?"
-```
-
 ## Installation
 
 ### Option 1: Docker (Recommended)
 
-1. Clone the repository:
+Follow these steps to get started:
+
 ```bash
-git clone <repository-url>
+# 1. Clone the repository
+git clone https://github.com/idodegani/repo-analyst.git
 cd repo-analyst
-```
 
-2. Set up environment variables:
-```bash
-cp .env.example .env
-# Edit .env and add your OpenAI API key
-```
+# 2. Ensure Docker Desktop is installed and running
+# Download from: https://www.docker.com/products/docker-desktop
 
-3. Build and run:
-```bash
+# 3. Create .env file with OpenAI API key
+echo "open_ai_api_key=sk-proj-YOUR_ACTUAL_KEY" > .env
+
+# 4. Clone the httpx repository (the code to analyze)
+git clone https://github.com/encode/httpx.git
+
+# 5. Build and start the Docker container
 docker-compose up -d
+
+# 6. Index the repository (creates FAISS embeddings)
+docker-compose run --rm app python app.py index
+
+# 7. Run queries (colors work automatically)
+docker-compose run --rm app python app.py query "how does httpx handle timeouts?"
 ```
 
-### Option 2: Local Installation
+### Option 2: Local Installation (Less Recommended)
 
 1. Clone and set up Python environment:
 ```bash
-git clone <repository-url>
+git clone https://github.com/idodegani/repo-analyst.git
 cd repo-analyst
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
@@ -63,18 +58,41 @@ pip install -r requirements.txt
 
 3. Configure environment:
 ```bash
-cp .env.example .env
-# Edit .env and add your OpenAI API key
+echo "open_ai_api_key=sk-proj-YOUR_ACTUAL_KEY" > .env
 ```
 
-4. Build the index:
+4. Clone the httpx repository:
+```bash
+git clone https://github.com/encode/httpx.git
+```
+
+5. Build the index:
 ```bash
 python app.py index
 ```
 
 ## Usage
 
-### Command Line Interface
+### Docker Commands (Recommended)
+
+```bash
+# Query the repository
+docker-compose run --rm app python app.py query "How does httpx validate SSL certificates?"
+
+# Interactive mode with conversation history
+docker-compose run --rm app python app.py interactive
+
+# Show help and available commands
+docker-compose run --rm app python app.py --help
+
+# Show system information and configuration
+docker-compose run --rm app python app.py info
+
+# Rebuild the index (if code changes)
+docker-compose run --rm app python app.py index
+```
+
+### Local Commands (If using venv)
 
 ```bash
 # Build/rebuild the vector index
