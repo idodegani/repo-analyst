@@ -274,10 +274,6 @@ Contributions are welcome! Areas for improvement include:
 - Real-time index updates
 - Web UI interface
 
-## License
-
-MIT License - See LICENSE file for details
-
 ## Acknowledgments
 
 - Built with LangGraph for pipeline orchestration
