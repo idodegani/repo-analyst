@@ -19,6 +19,7 @@ from typing import List, Dict, TypedDict, Optional
 
 from .config import Config
 from .judge import AnswerJudge
+from .router import QueryRouter
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,11 @@ class RAGState(TypedDict):
     
     Attributes:
         query: User's current question about the codebase
+        original_query: User's original query text (preserved for context)
+        refined_query: Fine-tuned query for better embedding (if relevant)
+        is_relevant_query: Whether query is relevant to httpx
+        rejection_reason: Reason why query was rejected (if irrelevant)
+        rejection_message: Contextual message for irrelevant queries
         conversation_history: List of previous Q&A turns
         query_embedding: Numpy array of the query embedding for FAISS search
         retrieved_chunks: List of relevant code chunks from vector store
@@ -48,6 +54,11 @@ class RAGState(TypedDict):
         error: Any error message encountered during execution
     """
     query: str
+    original_query: str
+    refined_query: Optional[str]
+    is_relevant_query: bool
+    rejection_reason: Optional[str]
+    rejection_message: Optional[str]
     conversation_history: List[ConversationTurn]
     query_embedding: Optional[np.ndarray]
     retrieved_chunks: List[Dict]
@@ -125,6 +136,11 @@ class RAGPipeline:
         if config.get('judge', 'enabled', default=False):
             self.judge = AnswerJudge(config)
         
+        # Initialize router if enabled
+        self.router = None
+        if config.get('router', 'enabled', default=True):
+            self.router = QueryRouter(config)
+        
         # Build LangGraph
         self.graph = self._build_graph()
         
@@ -165,8 +181,96 @@ class RAGPipeline:
                 f"Run indexing first. Error: {e}"
             )
     
+    def _route_query(self, state: RAGState) -> RAGState:
+        """Node: Route and classify the query for relevance.
+        
+        Uses QueryRouter to:
+        - Classify if query is relevant to httpx
+        - Generate rejection message if irrelevant
+        - Refine query for better embedding if relevant
+        
+        Args:
+            state: Current RAG state
+            
+        Returns:
+            Updated state with routing results
+        """
+        try:
+            if not self.router:
+                # Router disabled, treat all queries as relevant
+                state['is_relevant_query'] = True
+                state['original_query'] = state['query']
+                state['refined_query'] = state['query']
+                state['rejection_reason'] = None
+                state['rejection_message'] = None
+                return state
+            
+            # Store original query
+            state['original_query'] = state['query']
+            
+            # Classify and refine
+            result = self.router.classify_and_refine(state['query'])
+            
+            state['is_relevant_query'] = result['is_relevant']
+            state['rejection_reason'] = result.get('reason')
+            
+            if result['is_relevant']:
+                # Use refined query for embedding
+                state['refined_query'] = result.get('refined_query', state['query'])
+                state['rejection_message'] = None
+            else:
+                # Store rejection message
+                state['refined_query'] = None
+                state['rejection_message'] = result.get('rejection_message', 
+                    "I'm sorry, but I can only help with questions about the httpx library.")
+                
+        except Exception as e:
+            logger.error(f"Router error: {e}")
+            # Default to relevant to avoid blocking valid queries
+            state['is_relevant_query'] = True
+            state['original_query'] = state['query']
+            state['refined_query'] = state['query']
+            state['rejection_reason'] = f"Router error: {e}"
+            state['rejection_message'] = None
+        
+        return state
+    
+    def _check_relevance(self, state: RAGState) -> str:
+        """Conditional edge function to check query relevance.
+        
+        Args:
+            state: Current RAG state
+            
+        Returns:
+            Next node name: "reject" or "continue"
+        """
+        if state.get('is_relevant_query', True):
+            return "continue"
+        else:
+            return "reject"
+    
+    def _handle_rejection(self, state: RAGState) -> RAGState:
+        """Node: Handle irrelevant query rejection.
+        
+        Sets the answer to the rejection message and skips RAG processing.
+        
+        Args:
+            state: Current RAG state
+            
+        Returns:
+            Updated state with rejection message as answer
+        """
+        state['answer'] = state.get('rejection_message', 
+            "I'm sorry, but I can only help with questions about the httpx library.")
+        state['validation_passed'] = True  # No need to validate rejection messages
+        state['validation_message'] = "Query rejected as irrelevant"
+        return state
+    
     def _embed_query(self, state: RAGState) -> RAGState:
         """Node: Generate embedding for the query.
+        
+        Uses refined_query for better embedding quality if available,
+        otherwise falls back to original query.
         
         Args:
             state: Current RAG state
@@ -175,7 +279,9 @@ class RAGPipeline:
             Updated state with query_embedding or error
         """
         try:
-            query_embedding = self.model.encode([state['query']], show_progress_bar=False)
+            # Use refined query for embedding if available
+            query_to_embed = state.get('refined_query') or state['query']
+            query_embedding = self.model.encode([query_to_embed], show_progress_bar=False)
             state['query_embedding'] = query_embedding.astype('float32')
         except Exception as e:
             state['error'] = f"Error embedding query: {e}"
@@ -284,7 +390,9 @@ class RAGPipeline:
                     f"It is only here to make you produce a better answer. Do not reply to it.\n\n"
                 )
             
-            # Build prompt
+            # Build prompt using original query to preserve user's style
+            user_query = state.get('original_query', state['query'])
+            
             prompt = f"""{feedback_section}You are a code analysis assistant for the httpx library.
 Answer the question using ONLY the provided code chunks.
 
@@ -294,7 +402,7 @@ Code Context:
 {context}
 
 --- CURRENT USER QUERY ---
-Question: {state['query']}
+Question: {user_query}
 
 Instructions:
 - Answer based ONLY on the code chunks provided above
@@ -357,9 +465,10 @@ Answer:"""
             return state
         
         try:
-            # Evaluate answer
+            # Evaluate answer using original query to maintain context
+            query_for_judge = state.get('original_query', state['query'])
             score, feedback = self.judge.evaluate_answer(
-                query=state['query'],
+                query=query_for_judge,
                 retrieved_chunks=state['retrieved_chunks'],
                 answer=state['answer']
             )
@@ -531,7 +640,12 @@ Answer:"""
         """
         workflow = StateGraph(RAGState)
         
-        # Add nodes
+        # Add router node if enabled
+        if self.router:
+            workflow.add_node("route_query", self._route_query)
+            workflow.add_node("handle_rejection", self._handle_rejection)
+        
+        # Add core RAG nodes
         workflow.add_node("embed_query", self._embed_query)
         workflow.add_node("retrieve_chunks", self._retrieve_chunks)
         workflow.add_node("build_context", self._build_context)
@@ -546,7 +660,22 @@ Answer:"""
         workflow.add_node("validate_answer", self._validate_answer)
         
         # Define edges
-        workflow.set_entry_point("embed_query")
+        if self.router:
+            # With router: route_query → conditional → embed_query or handle_rejection
+            workflow.set_entry_point("route_query")
+            workflow.add_conditional_edges(
+                "route_query",
+                self._check_relevance,
+                {
+                    "continue": "embed_query",
+                    "reject": "handle_rejection"
+                }
+            )
+            workflow.add_edge("handle_rejection", END)
+        else:
+            # Without router: start with embed_query
+            workflow.set_entry_point("embed_query")
+        
         workflow.add_edge("embed_query", "retrieve_chunks")
         workflow.add_edge("retrieve_chunks", "build_context")
         workflow.add_edge("build_context", "generate_answer")
@@ -584,6 +713,11 @@ Answer:"""
         # Prepare initial state with conversation history
         initial_state: RAGState = {
             "query": user_query,
+            "original_query": user_query,
+            "refined_query": None,
+            "is_relevant_query": True,
+            "rejection_reason": None,
+            "rejection_message": None,
             "conversation_history": self.conversation_history.copy(),
             "query_embedding": None,
             "retrieved_chunks": [],

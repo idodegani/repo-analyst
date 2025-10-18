@@ -57,3 +57,9 @@ judge:
     high: 5                  # Scores >= 5 are good
     medium: 3                # Scores 3-4 get warning
 
+# Router Configuration
+router:
+  enabled: true              # Enable query relevance classification
+  model: "gpt-4o-mini"       # Model for classification and refinement
+  temperature: 0.0           # Consistent routing decisions
+

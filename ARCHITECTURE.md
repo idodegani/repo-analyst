@@ -18,11 +18,23 @@ The CodeChunker intelligently splits documents into semantic units. For Python f
 
 The DocumentIndexer orchestrates the full indexing pipeline. It coordinates the loader and chunker to process repository files, generates embeddings using the sentence-transformers/all-MiniLM-L6-v2 model, and builds a FAISS index for similarity search. The indexer processes embeddings in batches for memory efficiency and normalizes vectors for cosine similarity search. All chunk metadata is stored in a JSONL file alongside the FAISS index.
 
-### 4. RAG Pipeline (`core/rag.py`)
+### 4. Query Router (`core/router.py`)
+
+The QueryRouter implements query relevance classification and refinement as the first step in the pipeline. It uses an LLM with a detailed system prompt and few-shot examples to:
+
+- **Classify relevance**: Determines if a query is relevant to the httpx library (vs. off-topic, toxic, or inappropriate)
+- **Generate contextual rejections**: Creates helpful, context-aware messages for irrelevant queries explaining why they're out of scope
+- **Refine queries**: For relevant queries, removes slang and informal language to optimize for embedding quality
+
+The router uses a single LLM call that returns structured JSON with classification results, refinement suggestions, and rejection messages. Valid topics include HTTP requests, SSL/TLS, authentication, proxies, timeouts, async patterns, and other httpx-specific functionality. Invalid topics include general Python questions, other libraries, personal questions, and harmful content.
+
+### 5. RAG Pipeline (`core/rag.py`)
 
 The RAGPipeline is the heart of the system, orchestrated using LangGraph for state management. The pipeline executes through these nodes:
 
-- **embed_query**: Generates embeddings for the user's query using the same sentence-transformer model
+- **route_query**: Classifies query relevance and refines it for better embedding (if router enabled)
+- **handle_rejection**: Returns contextual rejection message and skips RAG processing for irrelevant queries
+- **embed_query**: Generates embeddings for the refined query using the same sentence-transformer model
 - **retrieve_chunks**: Performs FAISS similarity search with configurable top-k retrieval and minimum score filtering
 - **build_context**: Formats retrieved chunks with file:line citations and incorporates conversation history if enabled
 - **generate_answer**: Invokes the configured LLM (GPT-4o-mini by default) to produce an answer grounded in the retrieved context
@@ -30,13 +42,13 @@ The RAGPipeline is the heart of the system, orchestrated using LangGraph for sta
 - **validate_answer**: Checks that answers include proper citations and meet quality requirements
 - **finalize_answer**: Adds confidence warnings or retry messages based on judge scores
 
-The pipeline supports retry logic when the judge scores an answer poorly (1-2), attempting to regenerate with feedback. Conversation history is maintained across queries with a configurable maximum of 5 turns.
+The pipeline uses the refined query for embedding to improve retrieval quality, while preserving the original query for context building and answer generation to maintain the user's style and intent. Retry logic triggers when the judge scores an answer poorly (1-2), attempting to regenerate with feedback. Conversation history is maintained across queries with a configurable maximum of 5 turns.
 
-### 5. Answer Judge (`core/judge.py`)
+### 6. Answer Judge (`core/judge.py`)
 
 The AnswerJudge implements an LLM-based evaluation system that scores answers based on how well they are grounded in the retrieved evidence. It formats the chunks and answer for evaluation, invokes a judge LLM (can be different from the main LLM for independence), and parses the response to extract scores and feedback. Scores range from 1 (not grounded) to 6 (perfectly grounded). For scores of 1-2, the system triggers a retry with specific feedback about what needs improvement.
 
-### 6. CLI Interface (`app.py`)
+### 7. CLI Interface (`app.py`)
 
 The CLI provides multiple commands for interacting with the system:
 
@@ -47,9 +59,9 @@ The CLI provides multiple commands for interacting with the system:
 
 The interface uses Rich for enhanced terminal output with panels, markdown rendering, and progress indicators. In interactive mode, users can manage conversation history, clear context, and see judge scores for each answer.
 
-### 7. Configuration (`core/config.py`)
+### 8. Configuration (`core/config.py`)
 
-The Config class loads settings from config.yaml and validates required paths and environment variables. It provides nested key access with defaults and supports separate configuration for indexing, retrieval, validation, conversation history, LLM settings, and judge parameters.
+The Config class loads settings from config.yaml and validates required paths and environment variables. It provides nested key access with defaults and supports separate configuration for indexing, retrieval, validation, conversation history, LLM settings, judge parameters, and router settings.
 
 ## Data Flow
 
@@ -59,7 +71,21 @@ The indexing flow processes repository files through multiple stages. First, the
 
 ### Query Phase
 
-The query flow implements a sophisticated retrieval and generation pipeline. The user's query is embedded using the same sentence-transformer model. FAISS performs similarity search to retrieve the top-k most relevant chunks. The pipeline builds a context prompt incorporating retrieved chunks with citations and conversation history. The LLM generates an answer based solely on the provided context. If the judge is enabled, it evaluates the answer quality and may trigger a retry with feedback. The answer undergoes validation to ensure proper citations are included. Finally, the system updates conversation history and returns the grounded answer.
+The query flow implements a sophisticated retrieval and generation pipeline with quality gates:
+
+1. **Routing**: The QueryRouter first classifies if the query is relevant to httpx. Irrelevant queries (off-topic, toxic, or about other libraries) receive contextual rejection messages and skip RAG processing entirely.
+
+2. **Refinement**: For relevant queries, the router refines the query by removing slang and informal language, producing an optimized version for better embedding quality.
+
+3. **Retrieval**: The refined query is embedded using the same sentence-transformer model. FAISS performs similarity search to retrieve the top-k most relevant chunks.
+
+4. **Generation**: The pipeline builds a context prompt incorporating retrieved chunks with citations and conversation history, using the original query to maintain the user's style and intent. The LLM generates an answer based solely on the provided context.
+
+5. **Evaluation**: If the judge is enabled, it evaluates the answer quality and may trigger a retry with feedback for poorly grounded responses.
+
+6. **Validation**: The answer undergoes validation to ensure proper citations are included.
+
+7. **Finalization**: The system updates conversation history and returns the grounded answer.
 
 ## Design Decisions
 
@@ -77,6 +103,9 @@ AST parsing preserves semantic boundaries of functions and classes, maintains na
 
 ### Why LLM Judge?
 The judge provides objective evaluation of answer grounding, enables automatic retry with specific feedback, and helps maintain consistent answer quality across queries.
+
+### Why Query Router?
+The router protects against irrelevant or inappropriate queries, improves retrieval quality by refining informal queries, and provides better user experience with contextual rejection messages. By operating before embedding and retrieval, it saves computational resources on out-of-scope queries.
 
 ## Technology Stack
 

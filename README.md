@@ -6,6 +6,7 @@ A RAG-based code analysis tool that answers natural language questions about the
 
 - 🔍 **Semantic Search**: Find relevant code using natural language queries
 - 📚 **Grounded Answers**: All responses include file:line citations from actual code
+- 🛡️ **Query Router**: Validates query relevance and refines informal queries for better results
 - 💬 **Conversation History**: Interactive mode maintains context across queries
 - ⚡ **Fast Retrieval**: FAISS-powered vector search for quick responses
 - 🎯 **Answer Validation**: LLM judge evaluates answer quality and triggers retries if needed
@@ -131,13 +132,15 @@ See `examples.md` for detailed query examples with actual responses.
 
 The system implements a sophisticated RAG pipeline that processes your questions through multiple stages:
 
-1. **Query Processing**: Your natural language question is converted into embeddings using a sentence-transformer model
-2. **Semantic Search**: FAISS searches through pre-indexed code chunks to find the most relevant pieces of code
-3. **Context Building**: Retrieved code chunks are formatted with file:line citations and combined with conversation history
-4. **Answer Generation**: GPT-4o-mini generates an answer based solely on the retrieved context
-5. **Quality Validation**: An LLM judge evaluates the answer's grounding in evidence (scores 1-6)
-6. **Retry Logic**: Low-scoring answers trigger regeneration with specific feedback
-7. **Citation Verification**: The system ensures all answers include proper file:line references
+1. **Query Routing**: An LLM router first classifies if your query is relevant to httpx and refines informal queries for better embedding quality
+2. **Relevance Check**: Off-topic, toxic, or inappropriate queries receive contextual rejection messages and skip RAG processing
+3. **Query Processing**: Refined queries are converted into embeddings using a sentence-transformer model
+4. **Semantic Search**: FAISS searches through pre-indexed code chunks to find the most relevant pieces of code
+5. **Context Building**: Retrieved code chunks are formatted with file:line citations and combined with conversation history
+6. **Answer Generation**: GPT-4o-mini generates an answer based solely on the retrieved context using your original query
+7. **Quality Validation**: An LLM judge evaluates the answer's grounding in evidence (scores 1-6)
+8. **Retry Logic**: Low-scoring answers trigger regeneration with specific feedback
+9. **Citation Verification**: The system ensures all answers include proper file:line references
 
 ## Configuration
 
@@ -166,6 +169,11 @@ The system is configured via `config.yaml`:
 - `judge.max_retries`: Retry attempts for low scores (default: 1)
 - `judge.confidence_thresholds`: Score thresholds for confidence levels
 
+### Router Settings
+- `router.enabled`: Enable query relevance classification (default: true)
+- `router.model`: LLM model for classification and refinement (default: gpt-4o-mini)
+- `router.temperature`: Temperature for routing decisions (default: 0.0)
+
 ### Conversation Settings
 - `conversation.enable_history`: Maintain context across queries (default: true)
 - `conversation.max_history_turns`: History turns to keep (default: 5)
@@ -181,6 +189,7 @@ repo-analyst/
 │   ├── loader.py       # Repository file discovery and loading
 │   ├── chunker.py      # AST-based code chunking
 │   ├── indexer.py      # FAISS index builder
+│   ├── router.py       # Query relevance classifier and refiner
 │   ├── rag.py          # LangGraph RAG pipeline
 │   └── judge.py        # LLM answer quality judge
 ├── data/               # Generated indexes
